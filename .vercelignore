@@ -1,0 +1,12 @@
+# The website only needs the static files; keep desktop build files off Vercel.
+.github
+.venv*
+build
+dist
+*.spec
+*.bat
+*.ico
+desktop_app.py
+requirements-desktop.txt
+test_holtrop.py
+__pycache__

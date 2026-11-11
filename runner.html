@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python Runtime</title>
+<link rel="stylesheet" href="vendor/fonts.css">
+<style>
+  /* Navy duotone to match the page: every token is a step of one blue. */
+  :root {
+    --bg: #061426; --panel: #0b1d36; --line: #16304f; --ink: #dce8f8; --muted: #6f8bb0;
+    --hl: rgba(85, 152, 231, 0.24); --hl-bar: #5598e7;
+    --kw: #86b6ef; --num: #cde2fb; --str: #9ec5f4; --com: #4f6a90; --fn: #b7d3f6;
+    --ok: #0ca30c; --err: #e66767; --val: #9ec5f4;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 11.5px/1.55 "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; overflow: hidden; }
+  .wrap { display: grid; grid-template-rows: auto 1fr 38%; height: 100%; }
+  header { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    background: var(--panel); font-size: 11px; color: var(--muted); }
+  header .file { color: var(--ink); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #c98500; flex: none; }
+  .dot.ready { background: var(--ok); } .dot.busy { background: var(--hl-bar); } .dot.err { background: var(--err); }
+  header .sp { flex: 1; }
+  header button { font: inherit; color: var(--muted); background: transparent; border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 7px; cursor: pointer; }
+  header button[aria-pressed="true"] { color: var(--ink); border-color: var(--hl-bar); }
+  #code { overflow: auto; padding: 4px 0; position: relative; scrollbar-width: thin; }
+  .ln { display: flex; white-space: pre; padding-right: 10px; min-width: max-content; }
+  .ln .no { width: 34px; flex: none; text-align: right; padding-right: 10px; color: #2e4a70; user-select: none; }
+  .ln.on { background: var(--hl); box-shadow: inset 2px 0 0 var(--hl-bar); }
+  .ln.on .no { color: var(--ink); }
+  .ln.ran .no { color: #5598e7; }
+  .ln .val { color: var(--val); margin-left: 14px; opacity: 0.85; font-style: italic; }
+  .kw { color: var(--kw); font-weight: 600; } .num { color: var(--num); } .str { color: var(--str); }
+  .com { color: var(--com); font-style: italic; } .fn { color: var(--fn); }
+  #console { border-top: 1px solid var(--line); background: #040e1c; overflow: auto; padding: 6px 10px; scrollbar-width: thin; }
+  #console div { white-space: pre-wrap; word-break: break-word; }
+  .c-in { color: var(--fn); } .c-dim { color: var(--muted); } .c-err { color: var(--err); } .c-ok { color: var(--ok); }
+  .c-val b { color: var(--val); font-weight: normal; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="file">holtrop.py</span>
+    <span id="status">starting Python…</span>
+    <span class="sp"></span>
+    <button id="anim" aria-pressed="true" title="Replay each executed line">trace</button>
+  </header>
+  <div id="code" aria-label="Python source"></div>
+  <div id="console" aria-live="polite"></div>
+</div>
+
+<script>
+const codeEl = document.getElementById('code');
+const consoleEl = document.getElementById('console');
+const statusEl = document.getElementById('status');
+const dot = document.getElementById('dot');
+const animBtn = document.getElementById('anim');
+let animate = true, pyodide = null, lines = [], playToken = 0, pending = null, busy = false;
+
+animBtn.onclick = () => {
+  animate = !animate;
+  animBtn.setAttribute('aria-pressed', animate);
+};
+
+const say = (html, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.innerHTML = html;
+  consoleEl.appendChild(d);
+  while (consoleEl.childNodes.length > 400) consoleEl.removeChild(consoleEl.firstChild);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+};
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const setStatus = (text, state) => { statusEl.textContent = text; dot.className = 'dot ' + (state || ''); };
+
+const KW = new Set('def return if elif else for in import from as not and or None True False try except finally raise while with lambda class pass'.split(' '));
+function highlight(src) {
+  const re = /(#.*$)|("""[\s\S]*?"""|"[^"\n]*"|'[^'\n]*')|(\b\d+\.?\d*(?:e[-+]?\d+)?\b)|([A-Za-z_]\w*)(?=\s*\()|([A-Za-z_]\w*)/g;
+  return esc(src).replace(re, (m, com, str, num, fn, word) => {
+    if (com) return `<span class="com">${com}</span>`;
+    if (str) return `<span class="str">${str}</span>`;
+    if (num) return `<span class="num">${num}</span>`;
+    if (fn) return KW.has(fn) ? `<span class="kw">${fn}</span>` : `<span class="fn">${fn}</span>`;
+    return KW.has(word) ? `<span class="kw">${word}</span>` : word;
+  });
+}
+
+function renderCode(src) {
+  // Docstrings span lines, so colour per line with a simple in-docstring flag.
+  let inDoc = false;
+  codeEl.innerHTML = src.split('\n').map((line, i) => {
+    let body;
+    const quotes = (line.match(/"""/g) || []).length;
+    if (inDoc || quotes) {
+      body = `<span class="str">${esc(line)}</span>`;
+      if (quotes % 2) inDoc = !inDoc;
+    } else body = highlight(line);
+    return `<div class="ln" data-n="${i + 1}"><span class="no">${i + 1}</span><span>${body}</span><span class="val"></span></div>`;
+  }).join('');
+  lines = [...codeEl.children];
+}
+
+const fmt = v => {
+  if (typeof v !== 'number') return String(v);
+  const a = Math.abs(v);
+  if (a !== 0 && (a >= 1e5 || a < 1e-3)) return v.toExponential(4);
+  return Number.isInteger(v) ? String(v) : v.toPrecision(5).replace(/\.?0+$/, '');
+};
+
+// Two interchangeable backends running runner.py: the desktop app answers on
+// api/*, and the website falls back to Pyodide in the browser.
+let backend = null;
+
+async function nativeBackend() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 1500);
+  try {
+    const r = await fetch('api/ping', { signal: ctrl.signal, cache: 'no-store' });
+    if (!r.ok || !(r.headers.get('content-type') || '').includes('json')) return null;
+    const info = await r.json();
+    return {
+      engine: 'native', version: info.version, label: `Python ${info.version} (native, ${info.platform})`,
+      async run(body) {
+        const res = await fetch('api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const out = await res.json();
+        if (!out.ok) throw new Error(out.error);
+        return out.data;
+      },
+    };
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('could not load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+
+async function pyodideBackend(holtropSrc) {
+  await loadScript(PYODIDE_URL + 'pyodide.js');
+  const [py, runnerSrc] = await Promise.all([
+    loadPyodide({ indexURL: PYODIDE_URL }),  // a script added at runtime can't infer its own folder
+    fetch('runner.py', { cache: 'no-cache' }).then(r => r.text()),
+  ]);
+  pyodide = py;
+  py.FS.writeFile('holtrop.py', holtropSrc);
+  py.FS.writeFile('runner.py', runnerSrc);
+  const runner = py.pyimport('runner');
+  const version = runner.version();
+  return {
+    engine: 'Pyodide', version, label: `Python ${version} (Pyodide ${py.version})`,
+    async run(b) { return JSON.parse(runner.run(JSON.stringify(b.ship), b.knots, b.vmin, b.vmax)); },
+  };
+}
+
+async function boot() {
+  try {
+    const t0 = performance.now();
+    const src = await fetch('holtrop.py', { cache: 'no-cache' }).then(r => r.text());
+    renderCode(src);
+    setStatus('looking for Python…');
+    backend = await nativeBackend();
+    if (!backend) {
+      setStatus('loading Pyodide…');
+      backend = await pyodideBackend(src);
+    }
+    say(`${backend.label} ready in ${((performance.now() - t0) / 1000).toFixed(1)} s`, 'c-dim');
+    say('>>> import holtrop, runner', 'c-in');
+    setStatus(`Python ${backend.version} · idle`, 'ready');
+    parent.postMessage({ type: 'py-ready', version: backend.version, engine: backend.engine }, '*');
+    if (pending) { const p = pending; pending = null; run(p); }
+  } catch (e) {
+    setStatus('failed to start', 'err');
+    say(esc(String(e)), 'c-err');
+    parent.postMessage({ type: 'py-error', error: 'Python runtime failed to load: ' + e.message }, '*');
+  }
+}
+
+async function run(req) {
+  if (!backend || busy) { pending = req; return; }
+  busy = true;
+  const token = ++playToken;
+  setStatus('running…', 'busy');
+  const call = `holtrop.simulate(ship, knots=${req.knots.toFixed(2)}, v_min=${req.vmin}, v_max=${req.vmax})`;
+  try {
+    const t0 = performance.now();
+    const out = await backend.run({ ship: req.ship, knots: req.knots, vmin: req.vmin, vmax: req.vmax });
+    const wall = performance.now() - t0;
+    say(`>>> ${esc(call)}`, 'c-in');
+    parent.postMessage({ type: 'py-result', id: req.id, data: out }, '*');
+    play(out, token, wall);
+  } catch (e) {
+    const msg = String(e.message || e);
+    const last = msg.trim().split('\n').pop();
+    say(`>>> ${esc(call)}`, 'c-in');
+    say(esc(last), 'c-err');
+    setStatus('raised an exception', 'err');
+    parent.postMessage({ type: 'py-error', id: req.id, error: last }, '*');
+  } finally {
+    busy = false;
+    if (pending) { const p = pending; pending = null; run(p); }
+  }
+}
+
+function clearMarks() {
+  for (const el of codeEl.querySelectorAll('.ln.on, .ln.ran')) el.classList.remove('on', 'ran');
+  for (const el of codeEl.querySelectorAll('.val')) el.textContent = '';
+}
+
+function summary(out, wall) {
+  const p = out.point;
+  say(`    traced resistance(): ${out.trace.length} lines in ${out.t_point.toFixed(1)} ms · sweep: ${out.n_curve} speeds in ${out.t_curve.toFixed(1)} ms`, 'c-dim');
+  say(`    RT = <b>${(p.RT / 1e3).toFixed(1)} kN</b>   PE = <b>${(p.PE / 1e3).toLocaleString('en-US', { maximumFractionDigits: 0 })} kW</b>   Fn = <b>${p.Fn.toFixed(3)}</b>`, 'c-val');
+  setStatus(`done · ${wall.toFixed(0)} ms`, 'ready');
+}
+
+function scrollTo(el) {
+  const top = el.offsetTop - codeEl.clientHeight / 2;
+  codeEl.scrollTop = top;
+}
+
+function play(out, token, wall) {
+  clearMarks();
+  const ev = out.trace;
+  if (!animate || !ev.length) {
+    for (const [ln, ch] of ev) mark(ln, ch, false);
+    summary(out, wall);
+    return;
+  }
+  const duration = 1600, t0 = performance.now();
+  let i = 0, current = null;
+  const tick = now => {
+    if (token !== playToken) return;
+    const target = Math.min(ev.length, Math.ceil(((now - t0) / duration) * ev.length));
+    for (; i < target; i++) {
+      const [ln, ch] = ev[i];
+      if (current) current.classList.remove('on');
+      current = mark(ln, ch, true);
+    }
+    if (current) { current.classList.add('on'); scrollTo(current); }
+    if (i < ev.length) requestAnimationFrame(tick);
+    else { setTimeout(() => current && current.classList.remove('on'), 400); summary(out, wall); }
+  };
+  requestAnimationFrame(tick);
+}
+
+function mark(ln, changed, log) {
+  const el = lines[ln - 1];
+  if (!el) return null;
+  el.classList.add('ran');
+  const keys = Object.keys(changed);
+  if (keys.length) {
+    const txt = keys.map(k => `${k} = ${fmt(changed[k])}`).join(', ');
+    el.querySelector('.val').textContent = '→ ' + txt;
+    if (log) say(`  ${String(ln).padStart(3)} │ <b>${esc(txt)}</b>`, 'c-val');
+  }
+  return el;
+}
+
+window.addEventListener('message', e => {
+  if (e.data && e.data.type === 'run') run(e.data);
+});
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Holtrop–Mennen Simulator</title>
+<meta name="description" content="Interactive ship resistance estimate using the Holtrop–Mennen (1982) method, computed in Python in the browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M3 18h26l-4 7H8z' fill='%231c5cab'/%3E%3Cpath d='M2 28c4-3 8 3 12 0s8 3 12 0 4 0 4 0' stroke='%2386b6ef' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/fonts.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 17h26l-4 7H8z"/><path class="w" d="M2 28c4-3 8 3 12 0s8 3 12 0"/></svg>
+    <div>
+      <h1>Holtrop–Mennen Resistance Simulator</h1>
+      <p>RT = RF(1+k1) + RAPP + RW + RB + RTR + RA · 1982 regression, computed in Python</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span class="py-badge" id="pyBadge"><span class="dot"></span><span id="pyBadgeText">Starting Python…</span></span>
+    <button class="icon-btn" id="themeBtn" aria-label="Toggle colour theme" title="Toggle theme">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="app">
+  <aside class="controls" aria-label="Inputs">
+    <div class="preset-bar">
+      <label for="preset">Ship</label>
+      <select id="preset"></select>
+      <button id="resetBtn" class="ghost" title="Reload the selected ship">Reset</button>
+    </div>
+    <div id="groups"></div>
+    <p class="foot-note">Inputs follow the course notes: lcb in % of L, positive forward; speeds in knots (1 kn = 0.5144 m/s). The validity table on the board shows which ship types the regression was fitted to.</p>
+  </aside>
+
+  <section class="board" aria-label="Simulation">
+    <div class="banner" id="banner" hidden></div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid-2">
+      <article class="card ship-card">
+        <div class="card-head">
+          <h2>Hull and wave system</h2>
+          <span class="hint" id="shipHint"></span>
+        </div>
+        <canvas id="shipCanvas" aria-label="Side profile and waterplane of the ship with its wave system and resistance arrows"></canvas>
+      </article>
+      <article class="card py-card">
+        <div class="card-head">
+          <h2>Python runtime</h2>
+          <span class="hint" id="pyHint">holtrop.py</span>
+        </div>
+        <iframe id="pyFrame" src="runner.html" title="Python code being executed"></iframe>
+      </article>
+    </div>
+
+    <div class="grid-2">
+      <article class="card">
+        <div class="card-head">
+          <h2 id="chartTitle">Resistance curve</h2>
+          <div class="seg" id="chartMode" role="tablist" aria-label="Chart quantity">
+            <button data-mode="R" aria-pressed="true">Resistance</button>
+            <button data-mode="P" aria-pressed="false">Power</button>
+            <button data-mode="C" aria-pressed="false">Coefficients</button>
+            <button data-mode="S" aria-pressed="false">Share</button>
+          </div>
+        </div>
+        <div class="legend" id="chartLegend"></div>
+        <div class="chart-box"><canvas id="curve" aria-label="Resistance against speed"></canvas></div>
+        <p class="hint chart-hint">Click the chart to move the design speed.</p>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <h2>Breakdown at <span id="bdSpeed">–</span></h2>
+        </div>
+        <div class="stack" id="stackBar"></div>
+        <table class="bd" id="bdTable"></table>
+      </article>
+    </div>
+
+    <div class="grid-2">
+      <article class="card">
+        <div class="card-head">
+          <h2>Step by step</h2>
+          <span class="hint">the eight steps at the design speed</span>
+        </div>
+        <div class="steps" id="steps"></div>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <h2>Validity range</h2>
+          <span class="hint">Holtrop and Mennen fitted ranges</span>
+        </div>
+        <div id="validity"></div>
+      </article>
+    </div>
+  </section>
+</main>
+
+<script src="vendor/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
